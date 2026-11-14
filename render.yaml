@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: queueless-ai
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --workers 1 --threads 4 --bind 0.0.0.0:$PORT app:app
+    disk:
+      name: queueless-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_PATH
+        value: /var/data/queueless.db
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: APP_TIMEZONE
+        value: Asia/Kolkata

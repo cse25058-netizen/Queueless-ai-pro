@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+queueless.db
+.env
+.venv/
