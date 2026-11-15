@@ -1,60 +1,56 @@
 # QueueLess AI — Multi-Hospital Platform
 
-A Flask multi-tenant pilot application for hospital discovery, patient token booking, queue visibility and hospital staff workflows.
+**Less Waiting, Better Healthcare.**
 
-## Included in this revised build
-- Independent hospital/clinic registration and tenant-scoped hospital administration
-- Patient registration/login, token booking, appointment history and cancellation
-- Hospital directory, departments, doctor directory and queue display
-- Hospital admin dashboard and department management
-- Doctor login provisioning by the hospital admin (email + temporary password); doctor appointment lists and status updates are restricted to appointments assigned to that doctor
-- Appointment QR image endpoint and staff check-in by token value
-- CSRF token validation for state-changing authenticated requests, same-origin Origin checks, secure cookie options, password hashing and baseline security headers
-- Health endpoint, Dockerfile and Render blueprint
+Responsive Flask application for patient booking, live queue visibility and independent hospital workspaces. Includes accessible controls, browser voice input, an in-app navigation guide and a cache-only offline app shell.
 
-## Local setup
+## Included and working in this release
+- Patient sign-up, sign-in, sign-out and password hashing
+- Hospital/clinic workspace registration and tenant separation
+- Hospital directory search, departments and doctor directory
+- Patient token booking, appointment history and cancellation
+- Queue display and indicative wait-time estimate
+- Hospital admin dashboard, department and doctor management
+- Doctor accounts with doctor-scoped appointment list/status controls
+- Staff check-in by token; QR image generation for appointments
+- Easy-reading mode, Bengali/English home-screen switch, browser voice input where supported
+- In-app QueueLess navigation guide (not a medical chatbot)
+- Responsive layout, web app manifest and cache-only service worker
+- CSRF checks for authenticated mutations, password hashing, same-origin checks and baseline security headers
+- SQLite persistent database for a single-instance pilot; Render deployment blueprint
 
+## Not live integrations in this package
+SMS/WhatsApp and automated reminders, payment processing, camera-based live QR scanning, external generative AI, email verification, password reset, MFA, family booking and clinical triage are not implemented as live provider workflows. These require provider accounts, secrets, server-side integration, webhook handling and end-to-end testing. Browser voice support varies by device/browser.
+
+Offline mode caches only the public application shell. It does not cache patient records or submit bookings while offline. New bookings and queue updates require connectivity.
+
+## Local run
 ```bash
 python -m venv .venv
-# Windows: .venv\\Scripts\\activate
+# Windows: .venv\Scripts\activate
 # macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
 python app.py
 ```
+Open http://127.0.0.1:5000. Set a unique random `SECRET_KEY` for any hosted environment. Use HTTPS and `COOKIE_SECURE=true` in production.
 
-Open http://127.0.0.1:5000. Set a long random `SECRET_KEY` for any shared environment. Keep `COOKIE_SECURE=true` behind HTTPS.
+## Publish with Render
+1. Create a private GitHub repository and upload the contents of this folder (not the ZIP itself).
+2. In Render, create a Web Service from that repository or use `render.yaml`.
+3. Ensure the persistent disk is mounted at `/var/data` and `DATABASE_PATH=/var/data/queueless.db`.
+4. Set a strong unique `SECRET_KEY`, `COOKIE_SECURE=true`, and `APP_TIMEZONE=Asia/Kolkata`.
+5. Deploy, then open `/health`. It should report `status: ok` and `database: connected`.
 
-## Deploying a pilot to Render
-1. Push this project to a private GitHub repository.
-2. Create a Render Web Service from the repository, or use the included `render.yaml` blueprint.
-3. Keep the persistent disk mounted at `/var/data` and `DATABASE_PATH=/var/data/queueless.db`.
-4. Set a unique random `SECRET_KEY`, `COOKIE_SECURE=true`, and `APP_TIMEZONE=Asia/Kolkata`.
-5. Deploy and check `/health`.
+This is a single-instance pilot using SQLite on a persistent disk. Do not scale it to multiple instances. For a public multi-hospital production launch, migrate to managed PostgreSQL with migrations, backups, restore testing, pooling and monitoring.
 
-This Render configuration uses SQLite on a persistent disk and one Gunicorn worker. It is a small pilot configuration, **not** a horizontally scalable production database architecture. Before a public multi-hospital launch, migrate to managed PostgreSQL with a migration tool, connection pooling, backups and restore drills. The current app uses SQLite-specific connection and placeholder patterns; do not simply point `DATABASE_PATH` at a PostgreSQL URL.
-
-## Integrations not active in this build
-- **SMS:** no Twilio credentials or delivery workflow configured.
-- **Payments:** no Razorpay order creation, signature verification or webhook workflow configured. Do not collect money through this app.
-- **Automatic reminders:** no durable scheduler/worker configured. Do not rely on in-process timers for appointment reminders.
-- **QR:** the app generates a QR image and supports staff check-in by entering/scanning the token value. Camera-based live scanning is not included.
-- **Email verification/password recovery:** not configured.
-
-These require provider accounts, credentials, webhook configuration, delivery-failure handling and end-to-end testing. Never commit provider secrets to GitHub or send them in chat.
-
-## Tests and verification
-Run:
-
+## Verification
 ```bash
 python -m unittest discover -s tests -v
 node --check static/app.js
 python -m py_compile app.py tests/test_multitenant.py
 ```
+Run tests after installing requirements and perform browser-based end-to-end testing on mobile and desktop before sharing the live URL.
 
-The source-generation environment used for this package did not have Flask installed and had no package-network access, so Python compile checks and JavaScript syntax checks passed, but Flask runtime tests and browser end-to-end tests could not be executed here. Run the full commands in an environment with dependencies installed before deployment.
-
-## Healthcare safety and security
-This is a software pilot, not a certified hospital information system. Do not enter real patient data until a qualified application-security professional and the hospital's privacy/legal team have reviewed it. Before production, add and test: managed PostgreSQL, database migrations, rate limiting, email verification, account recovery, MFA for staff, staff invitation/activation, immutable audit coverage, backup/restore, monitoring/alerting, retention/deletion policy, privacy notice/consent, incident response and applicable Indian legal compliance (including the DPDP Act/rules as applicable). Perform tenant-isolation tests against every API endpoint, not only the included sample tests.
-
-Queue wait estimates are simple indicative heuristics, not AI predictions or guaranteed wait times. This software is not for diagnosis, triage or emergency care.
+## Healthcare and security notice
+This is a software pilot, not a certified hospital information system. Do not enter real patient data until a qualified security professional and the hospital privacy/legal team review it. Before real-world launch, implement managed PostgreSQL, rate limiting, email verification and account recovery, staff MFA, complete audit coverage, backup/restore, monitoring, data retention/deletion, privacy notice/consent, incident response and applicable Indian privacy/legal review. Queue estimates are heuristic, not medical advice, diagnosis, triage or guaranteed waiting times.

@@ -21,6 +21,9 @@ CREATE TABLE IF NOT EXISTS audit_log(id INTEGER PRIMARY KEY,tenant_id INTEGER,ac
 CREATE INDEX IF NOT EXISTS idx_appt_queue ON appointments(tenant_id,visit_date,department_id,status,id);
 CREATE INDEX IF NOT EXISTS idx_users_tenant ON users(tenant_id,role);
 CREATE TABLE IF NOT EXISTS payments(id INTEGER PRIMARY KEY,tenant_id INTEGER NOT NULL,appointment_id INTEGER NOT NULL,provider TEXT NOT NULL,provider_order_id TEXT UNIQUE,status TEXT NOT NULL DEFAULT 'created',amount_paise INTEGER NOT NULL,currency TEXT NOT NULL DEFAULT 'INR',created_at TEXT DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(tenant_id) REFERENCES tenants(id),FOREIGN KEY(appointment_id) REFERENCES appointments(id));
+CREATE TABLE IF NOT EXISTS family_profiles(id INTEGER PRIMARY KEY,owner_id INTEGER NOT NULL,name TEXT NOT NULL,relationship TEXT DEFAULT '',created_at TEXT DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(owner_id) REFERENCES users(id));
+CREATE TABLE IF NOT EXISTS notifications(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL,title TEXT NOT NULL,message TEXT NOT NULL,kind TEXT DEFAULT 'info',read_at TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id));
+CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id,read_at,created_at);
 '''
 def db():
  if 'db' not in g:
@@ -33,6 +36,20 @@ def close_db(e):
 def init_db():
  os.makedirs(os.path.dirname(DB) or '.',exist_ok=True);c=sqlite3.connect(DB);c.execute('PRAGMA journal_mode=WAL');c.executescript(SCHEMA);c.commit();c.close()
 init_db()
+
+def send_sms(to_number, body):
+ # Optional Twilio integration. No SMS is sent unless all credentials are configured.
+ sid=os.getenv('TWILIO_ACCOUNT_SID');token=os.getenv('TWILIO_AUTH_TOKEN');sender=os.getenv('TWILIO_FROM_NUMBER')
+ if not (sid and token and sender):return False
+ from urllib.parse import urlencode
+ from urllib.request import Request, urlopen
+ from urllib.error import URLError, HTTPError
+ data=urlencode({'To':to_number,'From':sender,'Body':body}).encode()
+ req=Request(f'https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json',data=data,headers={'Authorization':'Basic '+__import__('base64').b64encode(f'{sid}:{token}'.encode()).decode()})
+ try:
+  with urlopen(req,timeout=8) as response:return 200 <= response.status < 300
+ except (URLError,HTTPError,TimeoutError):return False
+
 def hash_pw(p):
  s=secrets.token_hex(16);return s+'$'+hashlib.pbkdf2_hmac('sha256',p.encode(),s.encode(),310000).hex()
 def verify_pw(p,v):
@@ -78,6 +95,16 @@ def headers(r):
  r.headers['X-Content-Type-Options']='nosniff';r.headers['X-Frame-Options']='DENY';r.headers['Referrer-Policy']='strict-origin-when-cross-origin';r.headers['Permissions-Policy']='camera=(self), microphone=(self), geolocation=()';r.headers['Content-Security-Policy']="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'";return r
 @app.get('/')
 def home():return render_template('index.html',csrf_token=session['csrf_token'])
+@app.get('/service-worker.js')
+def service_worker():
+ from flask import send_from_directory
+ return send_from_directory(BASE, 'service-worker.js', mimetype='application/javascript')
+
+@app.get('/manifest.webmanifest')
+def manifest():
+ from flask import send_from_directory
+ return send_from_directory(BASE, 'manifest.webmanifest', mimetype='application/manifest+json')
+
 @app.get('/health')
 def health():
  try:db().execute('SELECT 1');return jsonify(status='ok',database='connected',service='QueueLess AI Multi-Hospital')
@@ -138,11 +165,17 @@ def book():
  except:return jsonify(error='Choose a hospital.'),400
  c=db();dept=c.execute('SELECT id FROM departments WHERE id=? AND tenant_id=? AND active=1',(x.get('department_id'),tid)).fetchone()
  if not dept or not valid_day(day) or not slot:return jsonify(error='Choose a valid hospital, department, date and time.'),400
+ booked_for=str(x.get('booked_for','')).strip()[:80] or u['name']
+ if booked_for != u['name']:
+  profile=c.execute('SELECT id FROM family_profiles WHERE owner_id=? AND name=?',(u['id'],booked_for)).fetchone()
+  if not profile:return jsonify(error='Add this family member to your family profiles before booking for them.'),400
  doc=None
  if x.get('doctor_id'):
   doc=c.execute('SELECT id FROM doctors WHERE id=? AND tenant_id=? AND department_id=? AND available=1',(x['doctor_id'],tid,dept['id'])).fetchone()
   if not doc:return jsonify(error='Selected doctor is not available at this hospital/department.'),400
- c.execute('BEGIN IMMEDIATE');ahead=c.execute("SELECT COUNT(*) FROM appointments WHERE tenant_id=? AND department_id=? AND visit_date=? AND status IN ('waiting','serving','booked')",(tid,dept['id'],day)).fetchone()[0];token='QL-'+datetime.now(TZ).strftime('%y%m%d')+'-'+secrets.token_hex(3).upper();aid=c.execute("INSERT INTO appointments(tenant_id,token,patient_id,patient_name,doctor_id,department_id,visit_date,slot,status) VALUES(?,?,?,?,?,?,?,?,'waiting')",(tid,token,u['id'],u['name'],doc['id'] if doc else None,dept['id'],day,slot)).lastrowid;c.commit();return jsonify(id=aid,token=token,position=ahead+1,message='Booking confirmed.'),201
+ c.execute('BEGIN IMMEDIATE');ahead=c.execute("SELECT COUNT(*) FROM appointments WHERE tenant_id=? AND department_id=? AND visit_date=? AND status IN ('waiting','serving','booked')",(tid,dept['id'],day)).fetchone()[0];token='QL-'+datetime.now(TZ).strftime('%y%m%d')+'-'+secrets.token_hex(3).upper();aid=c.execute("INSERT INTO appointments(tenant_id,token,patient_id,patient_name,doctor_id,department_id,visit_date,slot,status) VALUES(?,?,?,?,?,?,?,?,'waiting')",(tid,token,u['id'],booked_for,doc['id'] if doc else None,dept['id'],day,slot)).lastrowid
+ c.execute("INSERT INTO notifications(user_id,title,message,kind) VALUES(?,?,?,'booking')",(u['id'],'Appointment confirmed',f'{token} at {day} · {slot}'))
+ c.commit();sms_sent=send_sms(u['phone'],f'QueueLess AI: booking {token} confirmed for {day} at {slot}.') if u.get('phone') else False;return jsonify(id=aid,token=token,position=ahead+1,booked_for=booked_for,sms_sent=sms_sent,message='Booking confirmed.'),201
 @app.get('/api/my-appointments')
 @login_required
 def my_appointments():
@@ -225,6 +258,62 @@ def check_in():
   dr=db().execute('SELECT id FROM doctors WHERE user_id=? AND tenant_id=?',(u['id'],u['tenant_id'])).fetchone()
   if not dr or row['doctor_id']!=dr['id']:return jsonify(error='This token is not assigned to your doctor account.'),403
  db().execute('UPDATE appointments SET checked_in=1 WHERE id=?',(row['id'],));db().commit();audit('check_in','appointment',row['id']);return jsonify(ok=True)
+
+
+@app.get('/api/family')
+@login_required
+def family_list():
+ rows=db().execute('SELECT id,name,relationship,created_at FROM family_profiles WHERE owner_id=? ORDER BY name',(current()['id'],)).fetchall()
+ return jsonify(items=[dict(r) for r in rows])
+@app.post('/api/family')
+@roles('patient')
+def family_add():
+ x=request.get_json(silent=True) or {};name=str(x.get('name','')).strip()[:80];rel=str(x.get('relationship','')).strip()[:40]
+ if len(name)<2:return jsonify(error='Enter the family member name.'),400
+ try:
+  cur=db().execute('INSERT INTO family_profiles(owner_id,name,relationship) VALUES(?,?,?)',(current()['id'],name,rel));db().commit()
+ except sqlite3.IntegrityError:return jsonify(error='Could not save family profile.'),400
+ return jsonify(id=cur.lastrowid,name=name,relationship=rel),201
+@app.delete('/api/family/<int:fid>')
+@roles('patient')
+def family_delete(fid):
+ cur=db().execute('DELETE FROM family_profiles WHERE id=? AND owner_id=?',(fid,current()['id']));db().commit()
+ return (jsonify(ok=True) if cur.rowcount else (jsonify(error='Family profile not found.'),404))
+@app.get('/api/notifications')
+@login_required
+def notification_list():
+ rows=db().execute('SELECT id,title,message,kind,read_at,created_at FROM notifications WHERE user_id=? ORDER BY id DESC LIMIT 50',(current()['id'],)).fetchall()
+ return jsonify(items=[dict(r) for r in rows])
+@app.post('/api/notifications/<int:nid>/read')
+@login_required
+def notification_read(nid):
+ cur=db().execute('UPDATE notifications SET read_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?',(nid,current()['id']));db().commit()
+ return (jsonify(ok=True) if cur.rowcount else (jsonify(error='Notification not found.'),404))
+@app.get('/api/admin/analytics')
+@roles('hospital_admin','doctor')
+def admin_analytics():
+ u=current();day=request.args.get('date') or datetime.now(TZ).date().isoformat()
+ rows=db().execute("SELECT status,COUNT(*) count FROM appointments WHERE tenant_id=? AND visit_date=? GROUP BY status",(u['tenant_id'],day)).fetchall()
+ by_dept=db().execute("SELECT d.name department,COUNT(a.id) total FROM departments d LEFT JOIN appointments a ON a.department_id=d.id AND a.visit_date=? WHERE d.tenant_id=? GROUP BY d.id ORDER BY total DESC",(day,u['tenant_id'])).fetchall()
+ return jsonify(date=day,status_counts={r['status']:r['count'] for r in rows},department_counts=[dict(r) for r in by_dept])
+@app.patch('/api/admin/appointments/<int:aid>/priority')
+@roles('hospital_admin','doctor')
+def admin_priority(aid):
+ u=current();x=request.get_json(silent=True) or {}
+ try:priority=int(x.get('priority',0))
+ except:return jsonify(error='Priority must be 0 or 1.'),400
+ if priority not in (0,1):return jsonify(error='Priority must be 0 or 1.'),400
+ reason=str(x.get('reason','')).strip()[:160]
+ if priority and len(reason)<4:return jsonify(error='Record a brief clinical reason for priority.'),400
+ sql="UPDATE appointments SET priority=?,priority_reason=? WHERE id=? AND tenant_id=?"
+ args=[priority,reason if priority else '',aid,u['tenant_id']]
+ if u['role']=='doctor':
+  dr=db().execute('SELECT id FROM doctors WHERE user_id=? AND tenant_id=?',(u['id'],u['tenant_id'])).fetchone()
+  if not dr:return jsonify(error='Doctor profile not linked.'),403
+  sql+=" AND doctor_id=?";args.append(dr['id'])
+ cur=db().execute(sql,args);db().commit()
+ if cur.rowcount:audit('priority_changed','appointment',aid)
+ return (jsonify(ok=True) if cur.rowcount else (jsonify(error='Appointment not found.'),404))
 
 @app.errorhandler(500)
 def internal(e):return jsonify(error='Unexpected server error. Please try again.'),500
